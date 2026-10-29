@@ -230,6 +230,17 @@ static bool setup_replicas(int channel_offset, void **page, volatile char **repl
     return true;
 }
 
+// First line of a sysfs file without the newline, or "" if it can't be read
+static std::string read_sysfs_line(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return "";
+    char buf[256] = {};
+    if (!fgets(buf, sizeof(buf), f)) buf[0] = '\0';
+    fclose(f);
+    buf[strcspn(buf, "\n")] = '\0';
+    return buf;
+}
+
 /*
 The CPUs that share this core's L3, as the kernel lists them (e.g. "0-7,16-23"),
 or "" if it can't be read. Two cores share an L3 when their lists match.
@@ -238,40 +249,57 @@ static std::string l3_shared_cpus(int core) {
     char path[128];
     for (int index = 0; ; ++index) {
         snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cache/index%d/level", core, index);
-        FILE *f = fopen(path, "r");
-        if (!f) return ""; // Ran out of cache levels without finding an L3
-        int level = 0;
-        bool read_ok = fscanf(f, "%d", &level) == 1;
-        fclose(f);
-        if (!read_ok || level != 3) continue;
+        std::string level = read_sysfs_line(path);
+        if (level.empty()) return ""; // Ran out of cache levels without finding an L3
+        if (level != "3") continue;
 
         snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cache/index%d/shared_cpu_list", core, index);
-        f = fopen(path, "r");
-        if (!f) return "";
-        char buf[256] = {};
-        if (!fgets(buf, sizeof(buf), f)) buf[0] = '\0';
-        fclose(f);
-        buf[strcspn(buf, "\n")] = '\0';
-        return buf;
+        return read_sysfs_line(path);
     }
 }
 
+// Logical CPUs on the same physical core as this one (e.g. "11,27"), or "" if it can't be read
+static std::string thread_siblings(int core) {
+    char path[128];
+    snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", core);
+    return read_sysfs_line(path);
+}
+
 /*
-The claim's cost is a cache-line transfer between the two cores, which is much cheaper
-when they share an L3 (on AMD: same CCX). Warn rather than fail, since comparing
-across L3s is a legitimate experiment too.
+The claim's cost is a cache-line transfer between the two cores, so both must be:
+- separate physical cores: hyperthreads of one core share L1/L2, so the line would
+  never leave the core and the claim would look unrealistically cheap
+- on the same L3 (on AMD: same CCX): otherwise the transfer crosses CCXs/CCDs and
+  costs far more than it needs to
+Returns false if either isn't true, or can't be verified.
 */
-static void check_shared_l3(int core_a, int core_b) {
+static bool check_core_topology(int core_a, int core_b) {
+    std::string siblings_a = thread_siblings(core_a);
+    std::string siblings_b = thread_siblings(core_b);
+    if (siblings_a.empty() || siblings_b.empty()) {
+        fprintf(stderr, "ERROR: couldn't check whether cores %d and %d are separate physical cores "
+                "(no thread_siblings_list in sysfs)\n", core_a, core_b);
+        return false;
+    } else if (siblings_a == siblings_b) {
+        fprintf(stderr, "ERROR: cores %d and %d are hyperthreads of the same physical core (%s). "
+                "Pick cores on separate physical cores\n", core_a, core_b, siblings_a.c_str());
+        return false;
+    }
+
     std::string l3_a = l3_shared_cpus(core_a);
     std::string l3_b = l3_shared_cpus(core_b);
     if (l3_a.empty() || l3_b.empty()) {
-        fprintf(stderr, "WARNING: couldn't read the L3 topology for cores %d and %d\n", core_a, core_b);
+        fprintf(stderr, "ERROR: couldn't check whether cores %d and %d share an L3 "
+                "(no L3 shared_cpu_list in sysfs)\n", core_a, core_b);
+        return false;
     } else if (l3_a != l3_b) {
-        fprintf(stderr, "WARNING: cores %d and %d do NOT share an L3 (%s vs %s), so the claim crosses CCXs/CCDs\n",
-                core_a, core_b, l3_a.c_str(), l3_b.c_str());
+        fprintf(stderr, "ERROR: cores %d and %d do NOT share an L3 (%s vs %s). "
+                "Pick two cores from the same L3\n", core_a, core_b, l3_a.c_str(), l3_b.c_str());
+        return false;
     } else {
         fprintf(stderr, "Cores %d and %d share an L3 (CPUs %s)\n", core_a, core_b, l3_a.c_str());
     }
+    return true;
 }
 
 static void usage(const char *prog) {
@@ -337,6 +365,12 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // Under chrt -f 99 the first thread would spin without yielding, so the second couldn't run until it finished
+    if (core_a == core_b) {
+        fprintf(stderr, "--core-a and --core-b must be different cores (both are %d)\n", core_a);
+        return 1;
+    }
+
     if (HardwareUtils::pin_to_core(AppConfig::CORE_MAIN) != 0) {
         perror("pin main to coordinator core");
         return 1;
@@ -344,7 +378,7 @@ int main(int argc, char *argv[]) {
 
     double tsc_ghz = HardwareUtils::calibrate_tsc_ghz();
     fprintf(stderr, "TSC frequency: %.3f GHz, threads on cores %d and %d\n", tsc_ghz, core_a, core_b);
-    check_shared_l3(core_a, core_b);
+    if (!check_core_topology(core_a, core_b)) return 1;
 
     void *page = nullptr;
     volatile char *replica_a = nullptr, *replica_b = nullptr;
