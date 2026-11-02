@@ -13,7 +13,6 @@
 #include "../discovery/benchmark/app_config.hpp"
 
 #include <algorithm>
-#include <cinttypes>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -91,7 +90,7 @@ int main(int argc, char *argv[]) {
     const std::vector<read_sample>& samples_b = contexts[1].samples;
 
     // No claim, so every thread calls the final work on every read
-    printf("Final work calls: replica A %" PRIu64 ", replica B %" PRIu64 " (each should be %d)\n",
+    printf("Final work calls: replica A %lu, replica B %lu (each should be %d)\n",
            contexts[0].final_iterations, contexts[1].final_iterations, n_samples);
 
     std::vector<uint64_t> hedged = pair_and_take_min(samples_a, samples_b);

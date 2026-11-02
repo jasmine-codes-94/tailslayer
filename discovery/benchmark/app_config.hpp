@@ -7,9 +7,9 @@
 
 struct AppConfig {
     // Very hardware specific. Hardcoded defaults that change
-    static inline constexpr int CORE_MEAS_A = 11;
-    static inline constexpr int CORE_MEAS_B = 12;
-    static inline constexpr int CORE_MAIN = 14;
+    static inline constexpr int CORE_MEAS_A = 2;
+    static inline constexpr int CORE_MEAS_B = 3;
+    static inline constexpr int CORE_MAIN = 1;
     static inline constexpr int DEFAULT_CHANNEL_OFFSET = 256; // The offset between the replicas to end up on different channels
     static inline constexpr int DEFAULT_CHANNEL_BIT = 8; // Bit in the physical memory address that says which channel the address belongs to
     static inline constexpr int DEFAULT_NUM_CHANNELS = 2;

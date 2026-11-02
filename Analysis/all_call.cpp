@@ -83,8 +83,12 @@ std::vector<record_context> record_reads(const std::vector<volatile char *>& add
         threads.emplace_back(record_thread, &context);
     }
 
-    // Wait until every thread is pinned and spinning, so they really do start together
-    while (m_threads_ready.load(std::memory_order_acquire) < static_cast<int>(threads.size())) {}
+    // Wait until every thread is pinned and spinning, so they really do start together.
+    // Yield on each check: the new threads start on main's core, and under chrt -f 99 they
+    // can't run (to pin themselves elsewhere) unless main gives up the core
+    while (m_threads_ready.load(std::memory_order_acquire) < static_cast<int>(threads.size())) {
+        std::this_thread::yield();
+    }
     m_measure_signal.store(true, std::memory_order_release);
 
     for (std::thread& thread : threads) {
